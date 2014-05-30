@@ -9,19 +9,19 @@ rebin x1 y1 x2 = consume queue 0
 
 -- | We use a "sweep" style algorithm which must be able to
 --    distinguish between points of the old and the new datasets.
-data Event = X1 Double Double | X2 Double deriving (Eq)
-
--- | Returns True if the Event belongs to the dataset X1
-isX1 :: Event -> Bool
-isX1 (X1 _ _) = True
-isX1 _        = False
+data Event = X2 Double | X1 Double Double deriving (Eq, Show)
 
 -- | Events must be orderable by their X values
 instance Ord Event where
-    compare e1 e2 = compare (x e1) (x e2)
+    compare e1 e2 = case compare (x e1) (x e2) of
+                        EQ -> if isX2 e1 then LT else GT
+                        a  -> a
       where x :: Event -> Double
             x (X1 d _) = d
             x (X2 d)   = d
+            isX2 :: Event -> Bool
+            isX2 (X2 _) = True
+            isX2 _      = False
 
 -- | Merges two sorted event queues into one sorted event queue
 merge :: [Event] -> [Event] -> [Event]
@@ -35,33 +35,25 @@ merge (x:xs) (y:ys)
 --    and returns the rebinned tallies
 consume :: [Event] -> Double -> [Double]
 -- Termination clauses:
-consume ((X2 _):(X1 _ _):[]) _ = error "Not enough bins"
-consume (_:_:[]) _ = []
--- Case: X1,X1 ; just sum the tallies into remT
-consume ((X1 _ t):e@(X1 _ _):es) remT
+consume [X1 _ t] remT = [t + remT]
+consume [_]      remT = [remT]
+-- Case: X1,X1 ; just add the tallies into remT
+consume (X1 _ t:e@(X1 _ _):es) remT
     = consume (e:es) (remT + t)
--- Case: X1,X2 ; grab tallies from future X1 and dump remT
-consume ((X1 x1l t):e@(X2 x2):es) remT
-    = (y2 + remT + t) : consume (e:es') 0
+-- Case: X1,X2 ; dump remT, weight t linearly, add new event X1 at X2's loc.
+consume (X1 x1l t:(X2 x2):es) remT
+    | x1l == x2 = consume (X1 x1l t : es) remT -- border case: X1 and X2 overlap
+    | otherwise = (t*f + remT) : consume ((X1 x2 ((1-f)*t)):es) 0
   where
-    (y2,es') = grabTallies es x1l x2
--- Case: X2,X1 ; just move on
-consume ((X2 _):e@(X1 _ _):es) remT
+    f = (x2-x1l)/(findNextXVal es - x1l)
+-- Case: X2,X1 ; just move on, drop the X2
+consume (X2 _:e@(X1 _ _):es) remT
     = consume (e:es) remT
--- Case: X2,X2 ; grab tallies from future X1
-consume ((X2 x2l):e@(X2 x2c):es) _
-    = y2 : consume (e:es') 0
-  where
-    (y2,es') = grabTallies es x2l x2c
+-- Case: X2,X2 ; no tallies
+consume (X2 _:e@(X2 _):es) _
+    = 0 : consume (e:es) 0
 
--- | Grabs tallies from a future X1 Event. Returns a new Queue with a modified
---    future X1 Event
-grabTallies :: [Event] -> Double -> Double -> (Double,[Event])
-grabTallies es lstX curX = (t',es')
-  where
-    (es1,es2) = break isX1 es
-    (t',es2') = case es2 of
-             ((X1 x1r t):es2'') -> let f = (curX - lstX) / (x1r - lstX)
-                                   in (f * t,(X1 x1r ((1-f)*t)):es2'')
-             _                  -> (0,es2)
-    es' = es1 ++ es2'
+findNextXVal :: [Event] -> Double
+findNextXVal [] = error "empty list"
+findNextXVal (X1 x _ : _) = x
+findNextXVal (_:es) = findNextXVal es
